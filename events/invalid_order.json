@@ -1,0 +1,16 @@
+{
+  "version": "2.0",
+  "routeKey": "POST /orders",
+  "rawPath": "/orders",
+  "headers": {
+    "content-type": "application/json"
+  },
+  "requestContext": {
+    "http": {
+      "method": "POST",
+      "path": "/orders"
+    }
+  },
+  "body": "{\"order_id\": \"bad!id\", \"items\": [{\"item_id\": \"item-1\", \"quantity\": -2, \"price\": -10.0}], \"total_amount\": 100.00}",
+  "isBase64Encoded": false
+}

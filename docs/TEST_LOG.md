@@ -1,0 +1,22 @@
+# Project Test Log
+
+This document records all automated and manual tests executed across the project lifecycle.
+Tests are only marked as `PASS` if actually executed and output verified.
+
+---
+
+## Test Execution Matrix
+
+| Test ID | Test Name | Stage / Scope | Expected Behavior | Actual Result | Status | Date / Time | Evidence & Notes |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **TST-001** | Governance Document Integrity Verification | Stage 1 (Governance) | SHA256 hashes of copied files in workspace must match source files in Downloads byte-for-byte. | Both SHA256 hashes matched source files identically without byte discrepancy. | **PASS** | 2026-10-18T00:55:00+05:30 | Verified via `Get-FileHash`. SHA256: `FBA710...` and `8180E3...`. |
+| **TST-002** | Initial Directory Structure Inspection | Stage 1 (Setup) | Required directories (`docs`, `src`, `tests`, `events`, `scripts`) must exist in workspace root. | All 5 directories created and confirmed present. | **PASS** | 2026-10-18T00:55:30+05:30 | Verified via `Get-ChildItem`. |
+| **TST-003** | Stage 1 Validation Unit Tests (`test_validation.py`) | Stage 1 (Logic) | 14 test cases validating schema, data types, required fields, order_id format, item structures, positive quantities/prices, sum consistency, and aliases. | All 14 tests executed and passed without errors. | **PASS** | 2026-10-18T01:26:00+05:30 | Command: `python -m unittest discover -s tests -v`. 14/14 passed. |
+| **TST-004a** | Stage 1 Intake Handler Tests (`test_lambda_function.py`) - Initial Run | Stage 1 (Logic) | 8 test cases validating proxy responses, HTTP status codes (201, 400), malformed JSON handling, and sample event parsing. | 7 tests passed; 1 test (`test_missing_or_empty_body_returns_400`) failed across 4 subtests — error message did not contain the word 'required'. | **FAIL** | 2026-10-18T01:24:50+05:30 | 4 subtest failures on assertion `any("required" in err.lower())`. |
+| **TST-004b** | Stage 1 Intake Handler Tests (`test_lambda_function.py`) - Recovery Run | Stage 1 (Logic) | Same 8 test cases after aligning error message to `'Request body is required and cannot be empty.'`. | All 8 tests passed. | **PASS** | 2026-10-18T01:26:30+05:30 | 22/22 tests passed in 0.002s. |
+| **TST-005a** | Stage 2 Baseline Regression (before Stage 2 code) | Stage 2 (Pre-check) | All 22 Stage 1 tests must pass before new code is introduced. | All 22 passed. No regressions. | **PASS** | 2026-10-18T01:34:10+05:30 | Command: `.\.venv\Scripts\python.exe -m unittest discover -s tests -v`. |
+| **TST-005b** | Stage 2 Order Service Unit Tests (`test_order_service.py`) | Stage 2 (Logic) | 36 tests: creation, duplicate detection, PENDING→PROCESSING→COMPLETED, failure (FAILED with error_detail), retry (PROCESSING→PENDING), 7 invalid transitions, 4 OrderNotFoundError cases, isolation. | All 36 tests passed on first run. | **PASS** | 2026-10-18T01:36:27+05:30 | Command: `.\.venv\Scripts\python.exe -m unittest tests/test_order_service.py -v`. 36/36 in 0.004s. |
+| **TST-005c** | Stage 2 Full Regression Suite (all 3 modules) | Stage 2 (Regression) | All 58 tests (22 Stage 1 + 36 Stage 2) must pass. | All 58 passed. Zero regressions. | **PASS** | 2026-10-18T01:36:35+05:30 | Command: `.\.venv\Scripts\python.exe -m unittest discover -s tests -v`. 58/58 in 0.006s. |
+| **TST-006a** | Pre-commit credential scan | Review (CHG-004) | Zero occurrences of `secret`, `password`, `token`, `api_key`, `aws_access`, `aws_secret`, `AKIA`, `credential` in all `.py` files. | `Select-String` returned zero matches across all source and test files. | **PASS** | 2026-10-18T01:40:24+05:30 | Scanned all `.py` files under `src/` and `tests/` via PowerShell `Select-String`. |
+| **TST-006b** | Pre-commit staged-files inspection | Review (CHG-004) | `git ls-files --others --exclude-standard` must return exactly the 16 intended project files. No `.venv`, `__pycache__`, or parent-directory files. | Exactly 16 project files listed; no unrelated or sensitive files present. | **PASS** | 2026-10-18T01:40:30+05:30 | Output verified against expected file list. |
+| **TST-006c** | Full regression after CHG-004 fixes | Review (CHG-004) | 58 tests must pass after: removing `time.sleep`, replacing `assertGreaterEqual` with `assertNotEqual`, injecting deterministic fake clock, fixing `or`-idiom `total_amount` bug. | All 58 passed. No failures or regressions. | **PASS** | 2026-10-18T02:07:14+05:30 | Command: `.\.venv\Scripts\python.exe -m unittest discover -s tests -v`. 58/58 in 0.006s. |

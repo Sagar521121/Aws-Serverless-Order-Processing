@@ -1,0 +1,17 @@
+{
+  "version": "2.0",
+  "routeKey": "POST /orders",
+  "rawPath": "/orders",
+  "headers": {
+    "content-type": "application/json",
+    "host": "api.example.com"
+  },
+  "requestContext": {
+    "http": {
+      "method": "POST",
+      "path": "/orders"
+    }
+  },
+  "body": "{\"order_id\": \"ord-2026-98234-a1b2\", \"customer_id\": \"cust-5501\", \"items\": [{\"item_id\": \"item-101\", \"quantity\": 2, \"price\": 19.99}, {\"item_id\": \"item-102\", \"quantity\": 1, \"price\": 10.00}], \"total_amount\": 49.98, \"currency\": \"USD\"}",
+  "isBase64Encoded": false
+}
