@@ -1,7 +1,31 @@
+# Virtual environments and dependencies
 .venv/
+venv/
+
+# AWS SAM build outputs and local caches
+.aws-sam/
+
+# AWS credentials and local environment files
+.aws/
+.env
+.env.*
+!.env.example
+
+# Python bytecode and caches
 __pycache__/
 *.py[cod]
 *$py.class
-*.env
+.pytest_cache/
+
+# Test coverage artifacts
+.coverage
+htmlcov/
+
+# Build and package output artifacts
+artifacts/
+dist/
+build/
+
+# IDE and editor settings
 .vscode/
 .idea/
