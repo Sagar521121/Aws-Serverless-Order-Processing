@@ -1,5 +1,7 @@
 # AWS Serverless Order Processing System
 
+[![CI](https://github.com/Sagar521121/Aws-Serverless-Order-Processing/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Sagar521121/Aws-Serverless-Order-Processing/actions/workflows/ci.yml)
+
 An asynchronous, event-driven order processing backend built with AWS serverless services. This repository provides a reference implementation demonstrating event-driven decoupling, idempotent request ingestion, distributed worker lease management, transient failure retries, dead-letter queue (DLQ) mechanics, and least-privilege Infrastructure as Code (IaC).
 
 > [!NOTE]
@@ -13,7 +15,8 @@ An asynchronous, event-driven order processing backend built with AWS serverless
 - **Runtime Target**: Python 3.12 (AWS Lambda standard-library baseline)
 - **Local Validation**: 160 unit and integration tests passing offline via `unittest`
 - **Infrastructure Templates**: AWS SAM (`template.yaml`) and AWS CloudFormation (`template.console.yaml`) verified with `cfn-lint`
-- **Deployment State**: The repository provides validated deployment templates and a packaging pipeline. Live cloud deployment and automated CI/CD pipelines (e.g., GitHub Actions) are not currently configured or asserted as live.
+- **CI Status**: GitHub Actions runs tests, CloudFormation linting, tracked-path checks, Lambda ZIP verification, and artifact upload on pushes to `main` and pull requests targeting `main`.
+- **Deployment State**: AWS deployment remains manual. No automated AWS delivery or deployment (CD) workflow is configured.
 
 ---
 
