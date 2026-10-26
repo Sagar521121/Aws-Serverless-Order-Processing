@@ -1,0 +1,105 @@
+﻿name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Tests, infrastructure, and package verification
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      REQUIRE_BOTO3: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install development and validation dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+          python -m pip install cfn-lint==1.57.2
+
+      - name: Check local-only paths are not tracked
+        run: |
+          python - <<'PY'
+          import subprocess
+          import sys
+
+          output = subprocess.check_output(["git", "ls-files", "-z"])
+          paths = [
+              path.replace("\\", "/")
+              for path in output.decode("utf-8").split("\0")
+              if path
+          ]
+
+          forbidden = []
+          for path in paths:
+              parts = path.split("/")
+              for part in parts:
+                  if (
+                      part in {
+                          ".aws", ".venv", "venv",
+                          ".aws-sam", "artifacts", ".env"
+                      }
+                      or (
+                          part.startswith(".env.")
+                          and part != ".env.example"
+                      )
+                  ):
+                      forbidden.append(path)
+                      break
+
+          if forbidden:
+              print("Unexpected local or generated files are tracked:")
+              print("\n".join(sorted(forbidden)))
+              sys.exit(1)
+
+          print("Tracked-path hygiene check: PASS")
+          PY
+
+      - name: Run unit and integration tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Lint CloudFormation templates
+        run: cfn-lint template.yaml template.console.yaml
+
+      - name: Build Lambda deployment ZIP
+        run: python scripts/package_console_lambda.py
+
+      - name: Verify ZIP contents, source parity, handlers, and credentials
+        run: >
+          python scripts/verify_console_lambda_zip.py
+          artifacts/console-deployment/order-processing-lambda.zip
+          src
+
+      - name: Upload verified Lambda package
+        uses: actions/upload-artifact@v7
+        with:
+          name: order-processing-lambda-python312
+          path: artifacts/console-deployment/order-processing-lambda.zip
+          if-no-files-found: error
+          retention-days: 7
