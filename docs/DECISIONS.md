@@ -2,6 +2,8 @@
 
 This document records key decisions, their justification, alternatives evaluated, and trade-offs regarding cost, security, reliability, and maintenance.
 
+> **Status note (2026-10-21):** Decisions below are historical records of their decision dates, not proof of current deployment or cost. The templates currently target Python 3.12; the latest recorded local full test run used Python 3.14.0, so this does not establish Python 3.12 execution compatibility. Boto3 is declared for local development serialization tests and is not added to the console Lambda ZIP. `ap-south-1` is the intended region, while the templates use the selected stack region. Zero out-of-pocket cost is an objective, never a guarantee; current eligibility, prices, usage, resources, and billing are unverified. The current business-processing callback is a local simulation, and no payment or inventory integration is implemented. See the current status addendum in `PROJECT_CONTEXT_AND_AI_DEVELOPMENT_GUIDE.md` and configuration facts in `docs/ARCHITECTURE.md`.
+
 ---
 
 ## DEC-001: Standard Library First (No external frameworks for MVP)
@@ -16,7 +18,7 @@ This document records key decisions, their justification, alternatives evaluated
   - *Pydantic / Marshmallow:* Powerful validation but adds external wheel dependencies, increases packaging complexity, and may have compatibility subtleties across Python versions.
   - *pytest:* Feature-rich, but standard `unittest` comes pre-installed in all Python environments and requires zero external pip installations.
 - **Trade-offs:**
-  - *Cost:* $0 (no external bandwidth, minimal package size).
+  - *Cost (historical estimate):* No AWS/runtime cost was expected for the then-local standard-library scope. Development tooling and any later cloud use can incur costs; this was not a cost guarantee.
   - *Security:* Highly secure (minimal attack surface, no transitive supply chain risks).
   - *Reliability:* High stability across minor Python versions.
   - *Maintenance:* Requires explicit manual schema checks in `validation.py`, which is simpler and educational.
@@ -28,7 +30,7 @@ This document records key decisions, their justification, alternatives evaluated
 - **Date:** 2026-10-18
 - **Decision:** Target Python 3.12 compatibility for all application source code, packaging scripts, and tests, even if the local development workstation runs a newer Python version (e.g. 3.14).
 - **Why Selected:**
-  - The existing AWS Lambda function `order-processing-intake` is deployed with Python 3.12 runtime.
+  - The project templates target Python 3.12. The historical claim that an intake Lambda was deployed is not verified by the current repository state.
   - Prevents syntax or standard-library feature divergence (e.g. avoiding 3.13/3.14-only syntax) that would fail upon deployment to AWS Lambda.
 - **Alternatives Considered:**
   - Upgrading Lambda runtime to Python 3.13: Rejected as it introduces unexpected AWS environment changes without user necessity.
@@ -37,10 +39,11 @@ This document records key decisions, their justification, alternatives evaluated
 
 ---
 
-## DEC-003: Target AWS Region (`ap-south-1`) & Zero Out-of-Pocket Guardrail
+## DEC-003: Intended AWS Region (`ap-south-1`) & Zero-Cost Objective
 
 - **Date:** 2026-10-18
-- **Decision:** Confine all proposed AWS architecture and resource planning strictly to `ap-south-1` (Asia Pacific, Mumbai) and operate strictly within AWS Free Tier limits with zero out-of-pocket costs.
+- **Decision:** Use `ap-south-1` (Asia Pacific, Mumbai) as the intended region and aim for zero out-of-pocket cost. The templates use the selected stack region; the objective is not a guarantee.
+- **Historical assumption:** The allowance figures listed below were planning notes recorded on 2026-10-18. They are not current pricing, eligibility, or billing evidence and must be rechecked before any separately approved AWS activity.
 - **Why Selected:**
   - Region requirement specified by user (`ap-south-1`).
   - Strict compliance with user's limited promotional credits and zero-cost policy.
@@ -52,7 +55,7 @@ This document records key decisions, their justification, alternatives evaluated
 - **Alternatives Considered:**
   - Multi-region or provisioned clusters (ECS/EKS): Rejected due to immediate non-zero cost and unnecessary complexity.
 - **Trade-offs:**
-  - *Cost:* Guaranteed $0 under low volume test usage.
+  - *Cost:* Zero cost was an objective under assumed low-volume usage, not a guarantee. Current pricing, eligibility, usage, account resources, and billing are unverified.
   - *Reliability:* High durability and built-in redundancy within `ap-south-1`.
 
 ---

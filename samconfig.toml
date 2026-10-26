@@ -1,0 +1,16 @@
+version = 0.1
+
+[default.global.parameters]
+region = "ap-south-1"
+stack_name = "edop-local-order-processing"
+
+[default.build.parameters]
+cached = true
+
+[default.deploy.parameters]
+resolve_s3 = true
+s3_prefix = "edop-local-order-processing"
+region = "ap-south-1"
+confirm_changeset = true
+capabilities = "CAPABILITY_IAM"
+parameter_overrides = "ResourcePrefix=edop-local WorkerLeaseSeconds=20"

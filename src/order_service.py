@@ -27,6 +27,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from decimal import Decimal
 from enum import Enum
 from typing import Callable, Dict, List, Optional
 
@@ -105,7 +106,7 @@ class OrderRecord:
     order_id: str
     customer_id: str
     items: List[dict]
-    total_amount: float
+    total_amount: int | float | Decimal
     currency: str
     status: OrderStatus
     created_at: str
@@ -203,7 +204,9 @@ class OrderService:
             order_id=order_id,
             customer_id=validated_payload["customer_id"],
             items=list(validated_payload["items"]),
-            total_amount=float(raw_total),  # type: ignore[arg-type]
+            # Preserve Decimal inputs from decimal-aware JSON parsing; legacy
+            # callers that pass floats retain their existing value and type.
+            total_amount=raw_total,  # type: ignore[arg-type]
             currency=validated_payload.get("currency", "USD"),
             status=OrderStatus.PENDING,
             created_at=now,
@@ -282,7 +285,7 @@ class OrderService:
         """
         record = self._transition(order_id, OrderStatus.FAILED)
         record.error_detail = reason
-        logger.warning("Order %s marked FAILED: %s", order_id, reason)
+        logger.warning("Order %s marked FAILED code=ORDER_FAILED.", order_id)
         return record
 
     def retry_order(self, order_id: str) -> OrderRecord:

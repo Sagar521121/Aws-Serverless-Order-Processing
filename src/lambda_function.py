@@ -10,14 +10,18 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Any, Dict
 
+from dynamo_order_repository import DynamoOrderRepository
+from intake_service import EnqueueFailure, IdempotencyConflict, IntakeService, IntakeValidationError
+from sqs_adapter import SqsPublisher
 from validation import validate_order_payload
 
 # Configure logger for CloudWatch diagnostics
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
+MAX_REQUEST_BODY_BYTES = 64 * 1024
 
 
 def _build_response(status_code: int, body_dict: Dict[str, Any]) -> Dict[str, Any]:
@@ -42,7 +46,29 @@ def _build_response(status_code: int, body_dict: Dict[str, Any]) -> Dict[str, An
     }
 
 
-def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
+def _request_id(context: Any) -> str:
+    """Return the opaque Lambda request ID for safe log correlation."""
+    try:
+        value = getattr(context, "aws_request_id", None)
+    except Exception:
+        return "unavailable"
+    return value if isinstance(value, str) and value else "unavailable"
+
+
+def _default_intake_service() -> IntakeService:
+    """Construct AWS adapters lazily; importing this module needs no AWS SDK."""
+    import os
+    import boto3
+
+    repository = DynamoOrderRepository(
+        boto3.resource("dynamodb").Table(os.environ["ORDERS_TABLE"])
+    )
+    publisher = SqsPublisher(boto3.client("sqs"), os.environ["ORDERS_QUEUE_URL"])
+    return IntakeService(repository, publisher)
+
+
+def lambda_handler(event: Dict[str, Any], context: Any,
+                   intake_service: Any = None) -> Dict[str, Any]:
     """Main Lambda entry point for order-processing-intake.
 
     Args:
@@ -68,6 +94,23 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
 
     # Extract request body
     raw_body = event.get("body")
+    if isinstance(raw_body, str):
+        body_size = len(raw_body.encode("utf-8"))
+    elif isinstance(raw_body, dict):
+        try:
+            body_size = len(json.dumps(raw_body, separators=(",", ":"),
+                                       ensure_ascii=False, default=str).encode("utf-8"))
+        except (TypeError, ValueError):
+            body_size = MAX_REQUEST_BODY_BYTES + 1
+    else:
+        body_size = 0
+    if body_size > MAX_REQUEST_BODY_BYTES:
+        return _build_response(
+            413,
+            {"status": "error", "message": "Request body is too large",
+             "errors": ["Request body must not exceed 64 KiB."]},
+        )
+
     if raw_body is None or (isinstance(raw_body, str) and not raw_body.strip()):
         logger.warning("Request rejected: missing or empty body.")
         return _build_response(
@@ -82,9 +125,14 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     # Parse JSON body
     if isinstance(raw_body, str):
         try:
-            order_data = json.loads(raw_body)
-        except json.JSONDecodeError as exc:
-            logger.warning("Request rejected: malformed JSON (%s).", exc)
+            # Keep JSON fractional numbers exact through validation, hashing,
+            # and persistence instead of first rounding them to binary float.
+            order_data = json.loads(raw_body, parse_float=Decimal)
+        except (json.JSONDecodeError, ValueError) as exc:
+            logger.warning(
+                "Request rejected code=MALFORMED_JSON request_id=%s",
+                _request_id(context),
+            )
             return _build_response(
                 400,
                 {
@@ -110,7 +158,10 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     try:
         is_valid, validation_errors = validate_order_payload(order_data)
         if not is_valid:
-            logger.info("Validation failed: %s", validation_errors)
+            logger.info(
+                "Request rejected code=ORDER_VALIDATION_FAILED request_id=%s",
+                _request_id(context),
+            )
             return _build_response(
                 400,
                 {
@@ -120,27 +171,35 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 },
             )
 
-        # Stage 1: Local foundation accepted response
-        # In Stage 3, this will be preceded by DynamoDB conditional write and SQS enqueue.
-        order_id = order_data["order_id"]
-        created_timestamp = datetime.now(timezone.utc).isoformat()
-
-        logger.info("Order %s accepted successfully.", order_id)
+        service = intake_service or _default_intake_service()
+        result = service.submit(order_data)
+        logger.info("Order %s accepted with status %s.",
+                    result["order_id"], result["order_status"])
         return _build_response(
             201,
             {
                 "status": "success",
                 "message": "Order accepted for processing",
-                "data": {
-                    "order_id": order_id,
-                    "order_status": "PENDING",
-                    "created_at": created_timestamp,
-                },
+                "data": result,
             },
         )
 
-    except Exception as exc:  # pylint: disable=broad-except
-        logger.error("Unexpected error processing order: %s", exc, exc_info=True)
+    except IdempotencyConflict as exc:
+        return _build_response(409, {"status": "error", "message": str(exc), "errors": [str(exc)]})
+    except IntakeValidationError as exc:
+        return _build_response(400, {"status": "error", "message": "Validation failed", "errors": exc.errors})
+    except EnqueueFailure as exc:
+        logger.warning(
+            "Order enqueue unresolved code=ENQUEUE_UNRESOLVED request_id=%s",
+            _request_id(context),
+        )
+        return _build_response(503, {"status": "error", "message": str(exc), "errors": ["Retry this request with the same order data."]})
+
+    except Exception:  # pylint: disable=broad-except
+        logger.exception(
+            "Order processing failed code=UNEXPECTED_ERROR request_id=%s",
+            _request_id(context),
+        )
         return _build_response(
             500,
             {

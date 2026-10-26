@@ -7,11 +7,66 @@ schema and business rules established in docs/ARCHITECTURE.md and docs/DECISIONS
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, List, Tuple
+from decimal import Decimal, localcontext
+from fractions import Fraction
+from typing import Any, Dict, List, Optional, Tuple
 
 # Order ID must be alphanumeric with underscores/hyphens, length 8 to 64.
 ORDER_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{8,64}$")
 CURRENCY_PATTERN = re.compile(r"^[A-Z]{3}$")
+DYNAMODB_MAX_SIGNIFICANT_DIGITS = 38
+DYNAMODB_MIN_ADJUSTED_EXPONENT = -130
+DYNAMODB_MAX_ADJUSTED_EXPONENT = 125
+
+
+def is_dynamodb_compatible_number(value: Decimal) -> bool:
+    """Return whether a finite Decimal fits DynamoDB's number limits.
+
+    DynamoDB numbers support up to 38 significant digits and nonzero values
+    from 1E-130 through 9.999...E+125 (with the same magnitude limits for
+    negative values). Trailing zeros do not add significant digits.
+    """
+    if not isinstance(value, Decimal) or not value.is_finite():
+        return False
+    if value.is_zero():
+        return True
+
+    digits = value.as_tuple().digits
+    significant_digits = len(digits)
+    while significant_digits > 1 and digits[significant_digits - 1] == 0:
+        significant_digits -= 1
+    return (
+        significant_digits <= DYNAMODB_MAX_SIGNIFICANT_DIGITS
+        and DYNAMODB_MIN_ADJUSTED_EXPONENT <= value.adjusted()
+        <= DYNAMODB_MAX_ADJUSTED_EXPONENT
+    )
+
+
+def _finite_decimal(value: Any) -> Optional[Decimal]:
+    """Return supported finite numeric inputs in decimal form.
+
+    Decimal values are used by DynamoDB reads. Converting floats through
+    ``str`` preserves their user-visible decimal representation and avoids
+    importing the binary approximation. Booleans and numeric strings are not
+    numeric inputs under the order API contract.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, Decimal):
+        number = value
+    elif isinstance(value, (int, float)):
+        number = Decimal(str(value))
+    else:
+        return None
+    return number if number.is_finite() else None
+
+
+def _format_fraction_2(value: Fraction) -> str:
+    """Format the diagnostic item sum without converting it to binary float."""
+    with localcontext() as context:
+        context.prec = max(28, len(str(abs(value.numerator))) + 5)
+        amount = Decimal(value.numerator) / Decimal(value.denominator)
+        return f"{amount:.2f}"
 
 
 def validate_order_payload(data: Any) -> Tuple[bool, List[str]]:
@@ -54,7 +109,7 @@ def validate_order_payload(data: Any) -> Tuple[bool, List[str]]:
             errors.append("Field 'customer_id' must not exceed 64 characters.")
 
     # 3. Validate items array
-    calculated_sum = 0.0
+    calculated_sum = Fraction(0)
     items_valid = True
 
     if "items" not in data:
@@ -85,46 +140,79 @@ def validate_order_payload(data: Any) -> Tuple[bool, List[str]]:
                 # quantity validation: must be integer and strictly positive
                 qty = item.get("quantity")
                 qty_valid = False
+                quantity = None
                 if qty is None:
                     errors.append(f"Item at index {index} is missing 'quantity'.")
-                elif isinstance(qty, bool) or not isinstance(qty, int):
+                elif isinstance(qty, bool):
                     errors.append(f"Item at index {index} 'quantity' must be an integer.")
-                elif qty <= 0:
-                    errors.append(f"Item at index {index} 'quantity' must be greater than 0.")
+                elif isinstance(qty, int):
+                    if qty <= 0:
+                        errors.append(f"Item at index {index} 'quantity' must be greater than 0.")
+                    elif not is_dynamodb_compatible_number(Decimal(qty)):
+                        errors.append(
+                            f"Item at index {index} 'quantity' exceeds DynamoDB numeric limits."
+                        )
+                    else:
+                        qty_valid = True
+                        quantity = qty
+                elif isinstance(qty, Decimal) and qty.is_finite() and qty == qty.to_integral_value():
+                    if qty <= 0:
+                        errors.append(f"Item at index {index} 'quantity' must be greater than 0.")
+                    elif not is_dynamodb_compatible_number(qty):
+                        errors.append(
+                            f"Item at index {index} 'quantity' exceeds DynamoDB numeric limits."
+                        )
+                    else:
+                        qty_valid = True
+                        # DynamoDB resource reads numbers as Decimal, including
+                        # values originally written as integer quantities.
+                        quantity = int(qty)
                 else:
-                    qty_valid = True
+                    errors.append(f"Item at index {index} 'quantity' must be an integer.")
 
                 # price validation: must be numeric and strictly positive
-                price = item.get("price")
+                price_value = item.get("price")
+                price = _finite_decimal(price_value)
                 price_valid = False
-                if price is None:
+                if price_value is None:
                     errors.append(f"Item at index {index} is missing 'price'.")
-                elif isinstance(price, bool) or not isinstance(price, (int, float)):
+                elif price is None:
                     errors.append(f"Item at index {index} 'price' must be a numeric value.")
                 elif price <= 0:
                     errors.append(f"Item at index {index} 'price' must be greater than 0.00.")
+                elif not is_dynamodb_compatible_number(price):
+                    errors.append(
+                        f"Item at index {index} 'price' exceeds DynamoDB numeric limits."
+                    )
                 else:
                     price_valid = True
 
                 if qty_valid and price_valid:
-                    calculated_sum += qty * float(price)
+                    # Fraction(Decimal) preserves the decimal value exactly,
+                    # including when the quantity is an int and input prices
+                    # came from mixed int/float/Decimal sources.
+                    calculated_sum += quantity * Fraction(price)
 
     # 4. Validate total_amount (supporting total_amount or totalAmount alias)
     total_amount = data.get("total_amount")
     if total_amount is None:
         total_amount = data.get("totalAmount")
 
+    total = _finite_decimal(total_amount)
     if total_amount is None:
         errors.append("Missing required field: 'total_amount'.")
-    elif isinstance(total_amount, bool) or not isinstance(total_amount, (int, float)):
+    elif total is None:
         errors.append("Field 'total_amount' must be a numeric value.")
-    elif total_amount <= 0:
+    elif total <= 0:
         errors.append("Field 'total_amount' must be greater than 0.00.")
+    elif not is_dynamodb_compatible_number(total):
+        errors.append("Field 'total_amount' exceeds DynamoDB numeric limits.")
     elif items_valid:
-        # Check calculation consistency within 0.01 tolerance for floating point math
-        if abs(float(total_amount) - calculated_sum) >= 0.01:
+        # Retain the existing 0.01 threshold, with exact decimal arithmetic.
+        if abs(Fraction(total) - calculated_sum) >= Fraction(1, 100):
             errors.append(
-                f"Field 'total_amount' ({total_amount}) does not match the sum of item prices ({calculated_sum:.2f})."
+                f"Field 'total_amount' ({total_amount}) does not match the sum of item prices "
+                f"({_format_fraction_2(calculated_sum)})."
             )
 
     # 5. Validate currency (optional, defaults to USD)

@@ -107,6 +107,8 @@ or other services only if they serve a clear requirement.
 
 ## 3. AWS environment and current state
 
+> **Historical user-reported account notes:** The console, identity, policy, Lambda, plan, and credit statements in this section record user reports from their stated dates. They are not a current inventory or verification of AWS state, permissions, deployment, eligibility, or billing.
+
 ### Region
 
 -   Target region: **Asia Pacific (Mumbai), `ap-south-1`**.
@@ -157,41 +159,59 @@ or other services only if they serve a clear requirement.
     attachment, or administrator access. Use a narrowly constrained
     Lambda execution role with a trusted Lambda service principal and
     only required permissions.
--   No application resources (Lambda functions, DynamoDB tables, SQS
-    queues, or API Gateway APIs) had been intentionally created for the
-    project at the last confirmed checkpoint. Recheck the console before
-    assuming the account is empty.
+-   Existing project resources in AWS:
+    -   Lambda function: `order-processing-intake` (runtime: Python 3.12).
+    -   IAM execution role: `order-processing-intake-role`.
+    -   IAM developer user: `aws-project-dev`.
+    -   IAM customer-managed policy: `OrderProcessingProjectDevPolicy`.
+-   Other planned application resources (DynamoDB table, SQS work queue,
+    SQS DLQ, Worker Lambda, and API Gateway) have not yet been created.
+    CHG-004 made no AWS changes, but the account has existing project
+    resources as listed above. Recheck the console before provisioning.
 
 ### Current checkpoint
 
-**Completed** - Reviewed account Free plan status, credits, and Free
-Tier usage. - Enabled root MFA (user-reported). - Created
-`aws-project-dev`, set up console sign-in and MFA (user-reported). -
-Created and attached `OrderProcessingProjectDevPolicy`. - Successfully
-signed in as the development user. - Opened the Lambda console
-successfully.
+> **Historical checkpoint:** The status below records an earlier checkpoint and is superseded by the dated addendum immediately following it. Its statements that Stage 3 implementation had not started, adapters were unimplemented, and TST-007c was the latest evidence are not current repository status.
 
-**Not yet completed** - Full policy review and permission validation. -
-Confirming the selected region in the development session at the next
-working session. - Pricing and eligibility checks for each specific
-configuration. - Creating AWS application resources. - Writing
-application code. - Configuring the queue trigger, DLQ, retry behavior,
-and idempotency. - End-to-end testing. - Resource cleanup and final cost
-verification.
+**Current stage and status:** Stage 3 — AWS integration design and review (**UNDER REVIEW**). Stages 1 and 2 local foundations are recorded as completed in the execution and test logs. Stage 3 implementation has not started; the design remains unapproved for implementation.
 
-### Next safe action
+**Current task:** The read-only project progress-tracking consistency audit is completed, according to its audit report. It reviewed the repository documents; it did not verify live AWS state.
 
-1.  Sign in as `aws-project-dev` and confirm `ap-south-1`.
-2.  Review the full IAM policy and its validation warnings.
-3.  Check current service pricing, free-plan eligibility, credit
-    applicability, and any additional charges for the exact
-    configuration.
-4.  Decide whether the project can be completed and tested within the
-    remaining Free plan window without out-of-pocket risk.
-5.  Provision only one resource at a time, after explaining the
-    configuration, permissions, cost risk, test, and cleanup path.
-6.  Stop before any action that requires a plan upgrade or has unclear
-    charges.
+**Next action:** Consolidate this checkpoint as the current documentation task (**approved scope: this checkpoint section only**). After this edit, the next action is for the user to review and approve the checkpoint. Approval of the checkpoint does not authorize implementation.
+
+**Approval status**
+- **Completed:** Stages 1 and 2 local work as recorded in project logs; read-only consistency audit.
+- **Approved:** This bounded checkpoint documentation update only.
+- **Proposed:** Review and approve the updated checkpoint after this edit.
+- **Awaiting approval:** Stage 3 design approval and each later gate, including offline adapter work, IAM changes, AWS provisioning, deployment, live integration testing, and cleanup. No Stage 3 implementation or AWS mutation is authorized here.
+
+**Open blockers and risks**
+- **Design:** Stage 3 still has assumptions and unresolved review items, including exact resource configuration, workload bounds, encryption, logging/alarms, and recovery/reconciliation behavior; see `docs/STAGE_3_DESIGN.md`.
+- **Implementation:** AWS adapters, queue/DLQ wiring, retry and idempotency behavior, and end-to-end paths remain unimplemented and unverified.
+- **Permissions:** The current developer policy, its reported editor warnings, execution-role trust and permissions, effective access, and exact resource scopes have not been verified in this checkpoint.
+- **Account/resources:** Exact account ID and ARNs, intended region, and current resource configuration/inventory need live verification.
+- **Billing/cost:** Current plan, trial/credit status, service eligibility, prices, existing billable resources, and billing alerts need a dated review. Zero out-of-pocket cost is not established; budget alerts are not spending caps.
+
+**Latest test evidence:** The latest entry in `docs/TEST_LOG.md` is TST-007c, dated `2026-10-18T16:20:58+05:30`, reporting 58/58 local unit tests passed. Later test results reported in `docs/EXECUTION_LOG.md` without matching entries in the test ledger are not independently verified by this checkpoint. No tests were run for this checkpoint update.
+
+**AWS verification:** Project notes historically list Lambda `order-processing-intake`, IAM role `order-processing-intake-role`, user `aws-project-dev`, and policy `OrderProcessingProjectDevPolicy`; those notes do not establish their current live state. The account plan/credit figures are a user-reported console snapshot dated 17 October 2026 in the AWS environment section above. No live AWS account, permission, resource, billing, or cost state was verified for this checkpoint; the audit was repository-document review only.
+
+**Outstanding work (dependencies; not authorization)**
+1. Review and approve this consolidated checkpoint.
+2. Complete the separate independent review and approval of the Stage 3 design.
+3. If separately authorized, perform the read-only AWS, IAM, account, and billing/cost verification required by the design gates.
+4. Only after applicable reviews and separate approvals, proceed through offline tests, IAM review, resource provisioning, deployment, and bounded live testing as distinct gates.
+5. Separately review retained data/resources, cleanup, and final cost state.
+
+**Rollback and cleanup:** Before any future provisioning or deployment, document exact resources/configuration, costs and eligibility evidence, verification steps, and rollback/deletion procedure. Provisioning, deployment, live testing, and cleanup require their applicable separate approvals. Keep cleanup separate from integration testing; identify exact deletion targets, record retained items and rollback results, and verify cleanup and remaining billable resources afterward.
+
+### Status addendum (2026-10-21; source tree at HEAD `11e07e8a7579d87d469deaf167bb446b9ec1e7d7` plus local working-tree changes)
+
+This addendum supersedes conflicting implementation and test-status statements in the historical checkpoint above. Local source now contains the intake path, DynamoDB and SQS adapters, worker lease/state handling, offline fakes, and a local-only DLQ recovery helper. The worker's business processing is a deterministic simulation; payment, inventory, shipping, and fulfillment integrations are not implemented. The DLQ helper is not a deployed recovery API or Lambda. The templates describe a possible deployment, but no live deployment or AWS behavior is verified here.
+
+The latest recorded full local unittest run is TST-016 in `docs/TEST_LOG.md`: 153 tests passed, with zero failures, errors, or skips, using the project `.venv` Python 3.14.0 on 2026-10-21. This is local test evidence against fakes and local code, not real AWS evidence. The template Lambda target is Python 3.12; Python 3.12 execution has not been established by that test run. Older test entries remain historical results for their stated environments and dates.
+
+The two templates currently agree on the configured queue, worker, logging, and table values documented in `docs/ARCHITECTURE.md` and `docs/DEPLOYMENT.md`. Template values are not deployed settings. The intended region is `ap-south-1`, but the templates use the selected stack region. Zero out-of-pocket cost remains an objective only; current prices, eligibility, resources, and billing have not been verified. For the pilot, inspect and investigate DLQ messages before any redrive. Automatic redrive and manual DynamoDB edits are not authorized.
 
 ## 4. General prerequisites before starting any AI-assisted software project
 

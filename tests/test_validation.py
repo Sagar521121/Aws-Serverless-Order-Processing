@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 import sys
 import unittest
+from decimal import Decimal
 
 # Ensure src directory is on sys.path for direct module import
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
@@ -36,6 +37,79 @@ class TestOrderValidation(unittest.TestCase):
         is_valid, errors = validate_order_payload(self.valid_payload)
         self.assertTrue(is_valid)
         self.assertEqual(errors, [])
+
+    def test_decimal_prices_and_total_pass_with_mixed_numeric_types(self) -> None:
+        payload = dict(self.valid_payload)
+        payload["items"] = [
+            {"item_id": "item-1", "quantity": Decimal("2"), "price": Decimal("19.99")},
+            {"item_id": "item-2", "quantity": 1, "price": 10.0},
+            {"item_id": "item-3", "quantity": 1, "price": 1},
+        ]
+        payload["total_amount"] = Decimal("50.98")
+
+        self.assertEqual(validate_order_payload(payload), (True, []))
+
+    def test_decimal_total_uses_the_existing_one_cent_tolerance(self) -> None:
+        for total, expected_valid in (
+            (Decimal("10.009"), True),
+            (Decimal("10.01"), False),
+        ):
+            with self.subTest(total=total):
+                payload = dict(self.valid_payload)
+                payload["items"] = [{"item_id": "item-1", "quantity": 1,
+                                     "price": Decimal("10.00")}]
+                payload["total_amount"] = total
+                valid, _ = validate_order_payload(payload)
+                self.assertEqual(valid, expected_valid)
+
+    def test_dynamodb_decimal_precision_and_exponent_boundaries(self) -> None:
+        accepted = Decimal("12345678901234567890123456789012345678")
+        payload = dict(self.valid_payload)
+        payload["items"] = [{"item_id": "item-1", "quantity": 1, "price": accepted}]
+        payload["total_amount"] = accepted
+        self.assertEqual(validate_order_payload(payload), (True, []))
+
+        for value in (Decimal("123456789012345678901234567890123456789"),
+                      Decimal("1e126"), Decimal("1e-131")):
+            with self.subTest(value=value):
+                payload["items"] = [{"item_id": "item-1", "quantity": 1, "price": value}]
+                payload["total_amount"] = value
+                valid, errors = validate_order_payload(payload)
+                self.assertFalse(valid)
+                self.assertTrue(any("DynamoDB numeric limits" in error for error in errors))
+
+    def test_smallest_supported_positive_exponent_is_accepted(self) -> None:
+        payload = dict(self.valid_payload)
+        payload["items"] = [{"item_id": "item-1", "quantity": 1,
+                             "price": Decimal("1e-130")}]
+        payload["total_amount"] = Decimal("1e-130")
+        self.assertEqual(validate_order_payload(payload), (True, []))
+
+    def test_oversized_integer_quantity_fails_dynamodb_numeric_limits(self) -> None:
+        payload = dict(self.valid_payload)
+        payload["items"] = [{"item_id": "item-1", "quantity": 10**126, "price": 1}]
+        payload["total_amount"] = 10**126
+        valid, errors = validate_order_payload(payload)
+        self.assertFalse(valid)
+        self.assertTrue(any("quantity" in error and "DynamoDB numeric limits" in error
+                            for error in errors))
+
+    def test_price_and_total_excessive_precision_are_rejected(self) -> None:
+        excessive = Decimal("1.123456789012345678901234567890123456789")
+        payload = dict(self.valid_payload)
+        payload["items"] = [{"item_id": "item-1", "quantity": 1, "price": excessive}]
+        payload["total_amount"] = excessive
+        valid, errors = validate_order_payload(payload)
+        self.assertFalse(valid)
+        self.assertTrue(any("price" in error and "DynamoDB numeric limits" in error
+                            for error in errors))
+
+        payload["items"] = [{"item_id": "item-1", "quantity": 1, "price": 1}]
+        payload["total_amount"] = excessive
+        valid, errors = validate_order_payload(payload)
+        self.assertFalse(valid)
+        self.assertTrue(any("total_amount" in error and "DynamoDB numeric limits" in error
+                            for error in errors))
 
     def test_valid_payload_with_total_amount_alias(self) -> None:
         """Payload using camelCase totalAmount alias should pass validation."""
@@ -130,7 +204,7 @@ class TestOrderValidation(unittest.TestCase):
 
     def test_invalid_quantity_fails(self) -> None:
         """Non-positive or non-integer quantities must fail."""
-        for bad_qty in [0, -1, 1.5, "2", True, False]:
+        for bad_qty in [0, -1, 1.5, Decimal("1.5"), Decimal("0"), "2", True, False]:
             with self.subTest(bad_qty=bad_qty):
                 payload = dict(self.valid_payload)
                 payload["items"] = [{"item_id": "item-1", "quantity": bad_qty, "price": 10.0}]
@@ -141,7 +215,9 @@ class TestOrderValidation(unittest.TestCase):
 
     def test_invalid_price_fails(self) -> None:
         """Non-positive or non-numeric prices must fail."""
-        for bad_price in [0, -5.0, "free", True, False]:
+        for bad_price in [0, -5.0, "free", "10.00", True, False,
+                          float("nan"), float("inf"), float("-inf"),
+                          Decimal("NaN"), Decimal("Infinity"), Decimal("-Infinity")]:
             with self.subTest(bad_price=bad_price):
                 payload = dict(self.valid_payload)
                 payload["items"] = [{"item_id": "item-1", "quantity": 1, "price": bad_price}]
@@ -149,6 +225,19 @@ class TestOrderValidation(unittest.TestCase):
                 is_valid, errors = validate_order_payload(payload)
                 self.assertFalse(is_valid)
                 self.assertTrue(any("price" in err for err in errors))
+
+    def test_invalid_totals_including_boolean_strings_and_nonfinite_values_fail(self) -> None:
+        for bad_total in [0, -1, True, False, "10.00", float("nan"),
+                          float("inf"), float("-inf"), Decimal("NaN"),
+                          Decimal("Infinity"), Decimal("-Infinity")]:
+            with self.subTest(bad_total=bad_total):
+                payload = dict(self.valid_payload)
+                payload["items"] = [{"item_id": "item-1", "quantity": 1,
+                                     "price": 10}]
+                payload["total_amount"] = bad_total
+                valid, errors = validate_order_payload(payload)
+                self.assertFalse(valid)
+                self.assertTrue(any("total_amount" in err for err in errors))
 
     def test_total_amount_mismatch_fails(self) -> None:
         """total_amount that does not match item sum must fail."""

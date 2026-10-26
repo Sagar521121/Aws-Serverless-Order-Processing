@@ -20,6 +20,7 @@ Uses Python's built-in unittest module. Compatible with Python 3.12.
 
 from __future__ import annotations
 
+import logging
 import os
 import sys
 import unittest
@@ -267,6 +268,23 @@ class TestFailOrder(unittest.TestCase):
         reason = "Inventory out of stock for item-101"
         record = self.service.fail_order(self.order_id, reason)
         self.assertEqual(record.error_detail, reason)
+
+    def test_fail_order_keeps_reason_in_record_but_omits_it_from_logs(self) -> None:
+        sentinel = "FAILURE_REASON_SENTINEL_025"
+
+        with self.assertLogs("order_service", level="WARNING") as captured:
+            record = self.service.fail_order(self.order_id, sentinel)
+
+        self.assertEqual(record.error_detail, sentinel)
+        self.assertTrue(any("code=ORDER_FAILED" in message for message in captured.output))
+        self.assertNotIn(sentinel, "\n".join(captured.output))
+        formatter = logging.Formatter()
+        for log_record in captured.records:
+            self.assertNotIn(sentinel, log_record.getMessage())
+            self.assertNotIn(sentinel, repr(log_record.args))
+            self.assertNotIn(sentinel, repr(log_record.__dict__))
+            self.assertNotIn(sentinel, formatter.format(log_record))
+            self.assertIsNone(log_record.exc_info)
 
     def test_error_detail_visible_via_get_order(self) -> None:
         """error_detail must be persisted and retrievable via get_order."""

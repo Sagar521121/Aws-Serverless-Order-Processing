@@ -2,13 +2,13 @@
 
 ## 1. System Overview
 
-The **Event-Driven Order Processing System** is a serverless, decoupled, asynchronous architecture designed on AWS. It decouples the client-facing HTTP intake interface from the downstream order processing and fulfillment logic using an asynchronous message queue.
+The **Event-Driven Order Processing System** is an educational serverless application with local implementation and deployment templates for an asynchronous order workflow. The worker currently runs a deterministic local business simulation; payment, inventory, shipping, and fulfillment integrations are not implemented. The templates describe a possible AWS deployment, but no live deployment or AWS behavior is verified by this document.
 
 ### Target Architecture Diagram
 
 ```mermaid
 flowchart TD
-    Client["Client / HTTP Request"] -->|POST /orders| APIGW["Amazon API Gateway"]
+    Client["Client / HTTP Request"] -->|POST /orders| APIGW["API Gateway HTTP API"]
     APIGW -->|Proxy Event| IntakeLambda["Lambda: order-processing-intake"]
     
     subgraph Storage & Queueing
@@ -34,13 +34,13 @@ flowchart TD
 
 | Component | AWS Service | Primary Responsibility | Failure Strategy |
 | :--- | :--- | :--- | :--- |
-| **API Gateway** | Amazon API Gateway (HTTP/REST) | Exposes public HTTPS endpoint `POST /orders`, validates HTTP headers, routes request to Intake Lambda. | Returns standard 5xx if Lambda cannot be reached. |
-| **Intake Handler** | AWS Lambda (`order-processing-intake`) | 1. Parses and validates input payload against schema.<br>2. Verifies idempotency to reject duplicate orders.<br>3. Saves initial order (`status: PENDING`) to DynamoDB.<br>4. Sends order event message to SQS queue.<br>5. Returns immediate HTTP 201 Created or 400 Bad Request to client. | If DynamoDB or SQS write fails, returns HTTP 500 without leaving orphaned state. |
-| **Orders Store** | Amazon DynamoDB | Serves as the system of record. Stores order details, customer ID, items, amounts, timestamps, and current order status. | Highly durable, multi-AZ by default. Managed capacity. |
-| **Work Queue** | Amazon SQS (`orders-queue`) | Buffers order processing tasks durably, smoothing out traffic spikes and decoupling intake from worker execution. | Messages kept durably for up to 14 days. Visibility timeout controls worker lease. |
-| **Dead-Letter Queue** | Amazon SQS (`orders-dlq`) | Holds poisoned or permanently failing messages after max receive attempts are exhausted. | Isolates broken messages for manual inspection without halting the queue. |
-| **Worker Handler** | AWS Lambda (`order-processing-worker`) | 1. Consumes batches from SQS.<br>2. Simulates/executes business logic (inventory, payment verification).<br>3. Updates DynamoDB record to `COMPLETED` or `FAILED`.<br>4. Deletes processed message from SQS upon successful execution. | Automatically retries up to `maxReceiveCount` (e.g. 3) before message is routed to DLQ. |
-| **Observability** | Amazon CloudWatch Logs | Collects structured execution logs, invocation metrics, errors, and traces. | Retention set to 7-14 days to eliminate storage charges. |
+| **API Gateway** | API Gateway HTTP API | Template defines `POST /orders` with AWS IAM authorization and invokes the intake handler. | IAM authorization and deployed route behavior have not been verified in AWS. |
+| **Intake Handler** | Lambda (`order-processing-intake`) | Parses and validates requests, creates or reuses an idempotent order record, publishes an SQS message, and records enqueue state. | A different payload for an existing order ID returns 409. An unresolved enqueue returns 503 and leaves the order available for same-payload retry; other unexpected errors return 500. |
+| **Orders Store** | DynamoDB | Repository stores normalized order data, payload hash, order/enqueue state, generation, timestamps, attempts, and worker lease fields. | Template defines one on-demand table with a configurable name and Retain policies; live table state is unverified. |
+| **Work Queue** | Standard SQS queue (`orders-queue`) | Carries order ID, payload hash, recovery generation, and message version for the worker. | Template values: 4-day retention and 60-second visibility timeout. The worker lease is separate: default 20 seconds (configurable 11-60 seconds). |
+| **Dead-Letter Queue** | SQS DLQ (`orders-dlq`) | Template redrive policy uses `maxReceiveCount: 5`; the DLQ is available for investigation. | Template retention is 14 days. No deployed recovery API or recovery Lambda is defined. |
+| **Worker Handler** | Lambda (`order-processing-worker`) | Consumes batch size one, checks hash/generation/status and a conditional lease, runs the local simulation, then records completion or permanent failure. | Template timeout is 10 seconds. Transient failures leave the lease to expire and the message retryable; template queue settings are not live-verified. |
+| **Observability** | CloudWatch Logs | Source emits application log messages; templates define intake and worker log groups. | Template retention is 7 days. No custom alarms or tracing resources are defined. Retention does not eliminate all possible charges. |
 
 ---
 
@@ -54,15 +54,20 @@ stateDiagram-v2
     PENDING --> PROCESSING: Worker Lambda picks up message
     PROCESSING --> COMPLETED: Processing succeeds
     PROCESSING --> FAILED: Permanent processing failure
-    PROCESSING --> PENDING: Transient failure (retried by SQS)
+    PROCESSING --> PROCESSING: Transient failure; lease expires before retry
+    PENDING --> RETRY_EXHAUSTED: Local recovery helper after triage
+    PROCESSING --> RETRY_EXHAUSTED: Local recovery helper after expired lease and triage
     FAILED --> [*]
     COMPLETED --> [*]
 ```
 
-- **`PENDING`**: Order received, validated, saved to DynamoDB, and queued in SQS.
+- **`PENDING`**: Order is stored. Check `enqueue_state`: `NEEDS_ENQUEUE` means enqueue is unresolved; `ENQUEUED` means the enqueue marker was recorded.
 - **`PROCESSING`**: Message received by worker, execution in progress.
-- **`COMPLETED`**: Business logic, inventory, or billing completed successfully.
-- **`FAILED`**: Business logic failed permanently (e.g., card declined, out of stock) or message sent to DLQ.
+- **`COMPLETED`**: The local simulation completed successfully; it does not represent payment, inventory, billing, or fulfillment.
+- **`FAILED`**: A permanent validation/business-data failure was recorded. DLQ routing alone does not change the order status.
+- **`RETRY_EXHAUSTED`**: A local recovery helper can record retry exhaustion after triage. This is not an automatic transition caused by SQS redrive.
+
+The local DLQ recovery helper is not deployed. Redrive and manual DynamoDB edits are not authorized by the current pilot documentation; investigate messages before any separately approved recovery procedure.
 
 ---
 
@@ -88,8 +93,8 @@ stateDiagram-v2
 ### 4.2 Validation Rules
 1. `order_id`: String, required, format matching alphanumeric and hyphens (`^[a-zA-Z0-9_-]{8,64}$`).
 2. `customer_id`: String, required, non-empty.
-3. `items`: Non-empty list of items. Each item must contain `item_id`, positive integer `quantity`, and positive float `price`.
-4. `total_amount`: Number, positive, matching sum of item line prices within rounding tolerance.
+3. `items`: Non-empty list of items. Each item must contain `item_id`, positive integer `quantity`, and positive finite DynamoDB-compatible numeric `price`.
+4. `total_amount`: Positive finite DynamoDB-compatible number, matching the sum of item line prices within the existing one-cent tolerance.
 5. `currency`: 3-letter ISO code (e.g., `USD`, `INR`, `EUR`).
 
 ### 4.3 Standard Success Response (`201 Created`)
@@ -100,7 +105,8 @@ stateDiagram-v2
   "data": {
     "order_id": "ord-98234-a1b2",
     "order_status": "PENDING",
-    "created_at": "2026-10-18T00:55:00.000000Z"
+    "created_at": 1792284900,
+    "enqueue_state": "ENQUEUED"
   }
 }
 ```
@@ -110,9 +116,7 @@ stateDiagram-v2
 {
   "status": "error",
   "message": "Validation failed",
-  "errors": [
-    "Field 'total_amount' does not match the sum of item prices."
-  ]
+  "errors": ["..."]
 }
 ```
 
@@ -121,37 +125,23 @@ stateDiagram-v2
 ## 5. Reliability, Idempotency & Failure Handling
 
 ### 5.1 Idempotency Strategy
-Clients may retry requests due to network timeouts. To prevent duplicate orders:
-- The `order_id` acts as the idempotency key and DynamoDB partition key (`PK`).
-- During intake, a conditional write (`attribute_not_exists(order_id)`) ensures an order cannot be overwritten or processed twice.
-- If duplicate submission is detected, intake returns `409 Conflict` (or existing record status if idempotent caching is enabled).
+Clients may retry requests due to network timeouts. The `order_id` is the idempotency key. A matching payload hash reuses the existing order; a different payload for the same ID returns `409 Conflict`. Conditional DynamoDB writes protect state transitions. Publication is at-least-once: an accepted SQS send whose response is lost can be published again after a client retry. Worker state, payload hash, generation, and conditional lease checks make duplicate deliveries safe for this local simulation; they do not provide exactly-once SQS publication or delivery. `NEEDS_ENQUEUE` recovery depends on a same-payload client retry; there is no sweeper.
 
 ### 5.2 SQS Visibility Timeout & DLQ Mechanics
-- **Visibility Timeout:** Configured to at least **6x the Worker Lambda timeout** (e.g., 30s Lambda timeout -> 180s SQS visibility timeout) to prevent another worker instance from reprocessing an ongoing job prematurely.
-- **Redrive Policy:** `maxReceiveCount = 3`. If a worker throws unhandled exceptions 3 times, SQS moves the message to `orders-dlq`.
+Template values are source queue visibility timeout 60 seconds, worker timeout 10 seconds, batch size 1, `maxReceiveCount = 5`, source retention 4 days, and DLQ retention 14 days. The worker lease is separate from queue visibility (default 20 seconds, configurable 11-60 seconds). These are template values, not verified deployed settings. SQS delivery is at-least-once.
 
 ---
 
-## 6. Least-Privilege IAM Plan (For Stage 3 Preparation)
+## 6. IAM Configuration in Templates
 
-Neither Lambda function will have administrator privileges or broad wildcard actions:
-
-- **Intake Execution Role:**
-  - `dynamodb:PutItem` on `arn:aws:dynamodb:ap-south-1:*:table/Orders`
-  - `sqs:SendMessage` on `arn:aws:sqs:ap-south-1:*:orders-queue`
-  - Basic CloudWatch logging (`logs:CreateLogGroup`, `logs:CreateLogStream`, `logs:PutLogEvents`)
-- **Worker Execution Role:**
-  - `sqs:ReceiveMessage`, `sqs:DeleteMessage`, `sqs:GetQueueAttributes` on `arn:aws:sqs:ap-south-1:*:orders-queue`
-  - `dynamodb:UpdateItem`, `dynamodb:GetItem` on `arn:aws:dynamodb:ap-south-1:*:table/Orders`
-  - Basic CloudWatch logging
+Both templates define function execution roles with resource-scoped data-plane policies for the table and source queue, plus log-stream permissions. The intake role publishes messages and writes order state; the worker role reads/deletes source-queue messages and reads/updates order state. This is static template evidence only; effective IAM permissions have not been checked in AWS. Resource ARNs use the stack's partition, region, account, and resource prefix rather than hard-coded account identifiers.
 
 ---
 
-## 7. Cost & Free-Tier Guardrails
+## 7. Cost Objective and Limits
 
-- **AWS Region:** `ap-south-1`
-- **Lambda:** 1M free requests/month and 400,000 GB-seconds compute.
-- **DynamoDB:** 25 GB free storage + 25 RCU/WCU (or On-Demand free request tier).
-- **SQS:** 1M requests free/month.
-- **CloudWatch:** 5 GB log ingestion free. Log retention capped to 7 days to eliminate storage charges.
-- **Zero Out-of-Pocket Cost:** Test volume will use less than 0.1% of these allowances.
+The intended region is `ap-south-1`, but templates do not hard-code a region; deployment uses the selected stack region. Zero out-of-pocket cost is an objective, not a guarantee. Pricing, free-tier eligibility, existing resources, usage, and billing were not verified. Template log retention is seven days; retention does not eliminate all possible charges.
+
+## Current implementation and evidence boundary
+
+Application code and local fakes implement the intake, repository, worker, and local DLQ recovery helper. The worker business action is simulated. Local tests establish behavior of this code and fakes only; they do not establish AWS service behavior, deployed configuration, permissions, or cost. `dlq_recovery.py` is not a deployed recovery function/API. Operators should inspect DLQ messages and investigate before any redrive; automatic redrive and manual DynamoDB edits are not authorized.

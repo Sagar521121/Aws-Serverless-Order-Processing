@@ -1,0 +1,7 @@
+# Development-only dependency for local DynamoDB TypeSerializer regression tests.
+# This file is not used by the Lambda packaging script or runtime deployment.
+# Full required test command (PowerShell):
+#   $env:REQUIRE_BOTO3 = "1"
+#   .\.venv\Scripts\python.exe -m unittest discover -s tests -v
+boto3==1.43.51
+botocore==1.43.51
